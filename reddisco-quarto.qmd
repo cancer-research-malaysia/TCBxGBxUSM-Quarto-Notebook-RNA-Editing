@@ -97,9 +97,9 @@ read_prefilter_tsv <- function(path) {
 }
 
 # Build a file path given cell line, condition, replicate, and suffix
-build_path <- function(cell_line, condition, replicate, suffix) {
+build_path <- function(cell_line, condition, replicate, suffix, sep = "-") {
   path(DATA_DIR, cell_line,
-       paste0(cell_line, "-", condition, "-", replicate, "-", suffix))
+       paste0(cell_line, "-", condition, "-", replicate, sep, suffix))
 }
 ```
 
@@ -115,7 +115,7 @@ build_master_annotation <- function(cell_line) {
   )
 
   map2(combos$condition, combos$replicate, function(cond, rep) {
-    p <- build_path(cell_line, cond, rep, ANNOTATED_SUFFIX)
+    p <- build_path(cell_line, cond, rep, ANNOTATED_SUFFIX, sep = ".")
     if (file_exists(p)) read_annotated_tsv(p) else NULL
   }) |>
     compact() |>
@@ -157,8 +157,8 @@ recover_replicate <- function(annotated_df, prefilter_path, master_annot) {
 
 # Load and recover one replicate: wrapper that calls both readers and recover_replicate
 load_replicate <- function(cell_line, condition, replicate, master_annot) {
-  ann_path <- build_path(cell_line, condition, replicate, ANNOTATED_SUFFIX)
-  pre_path <- build_path(cell_line, condition, replicate, PREFILTER_SUFFIX)
+  ann_path <- build_path(cell_line, condition, replicate, ANNOTATED_SUFFIX, sep = ".")
+  pre_path <- build_path(cell_line, condition, replicate, PREFILTER_SUFFIX, sep = "-")
 
   annotated <- read_annotated_tsv(ann_path)
   recover_replicate(annotated, pre_path, master_annot)
@@ -276,7 +276,7 @@ run_workflow <- function(cell_line) {
 
 # Step 1: read one annotated file directly and inspect
 test_ann <- read_annotated_tsv(
-  "input-data/ORL-207/ORL-207-siNT-R1.known_sites_freq10pct_genic.tsv"
+  build_path("ORL-207", "siNT", "R1", ANNOTATED_SUFFIX, sep = ".")
 )
 glimpse(test_ann)
 head(test_ann)
@@ -284,7 +284,7 @@ nrow(test_ann)
 
 # Step 2: read one pre-filter file directly and inspect
 test_pre <- read_prefilter_tsv(
-  "input-data/ORL-207/ORL-207-siNT-R1-knownEditing-labeled.tsv"
+  build_path("ORL-207", "siNT", "R1", PREFILTER_SUFFIX, sep = "-")
 )
 glimpse(test_pre)
 head(test_pre)
