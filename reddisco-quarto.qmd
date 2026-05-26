@@ -1,6 +1,6 @@
 ---
 title: "reddisco-quarto"
-format:
+format: gfm
   html:
     toc: true
     toc-depth: 3
