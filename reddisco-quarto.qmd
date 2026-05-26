@@ -104,6 +104,7 @@ build_path <- function(cell_line, condition, replicate, suffix, sep = "-") {
 ```
 
 ### Site Recovery Step
+
 To recover sites that might have been "called" as AG edited sites but fell off during the hard frequency threshold filtering at the time of annotation, we would be executing the strategy visualized below to "recover" them from the replicate sample files (pre-filter files) across the two conditions (siNT & sip150).
 
 ![Fig.2 Site Recovery Logic in R](images/reddisco_post-editing-site-calling-R-workflow_v3.svg)
@@ -402,6 +403,7 @@ count(list3, sip150_status)   # check the flag propagated correctly into list 3
 #   )
 # })
 ```
+
 ### List 2b Confidence Breakdown
 
 ```{r summary-status}
