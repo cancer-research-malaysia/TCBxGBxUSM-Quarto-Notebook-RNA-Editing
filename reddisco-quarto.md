@@ -1,46 +1,41 @@
----
-title: "reddisco-quarto"
-format:
-  gfm: default
-  html:
-    toc: true
-    toc-depth: 3
-    code-fold: true
-    df-print: paged
----
+# reddisco-quarto
+
 
 ## RNA Editing Quarto Notebook (Downstream Analysis)
 
-This notebook processes per-sample, per-replicate RNA editing output from RediTools v1
-and replicates the manual filtering workflow in a reproducible, scriptable form.
+This notebook processes per-sample, per-replicate RNA editing output
+from RediTools v1 and replicates the manual filtering workflow in a
+reproducible, scriptable form.
 
 The workflow for each cell line:
 
-1. **Recovery step** — for each replicate, sites in the master annotation set that fell
-   below the upstream 10% frequency filter are recovered from the pre-filter file and
-   re-attached with their actual FREQ/COV values (or 0 if truly absent).
-2. **List 1(a/b)** — intersect replicates within each condition (sites with FREQ > 0 in
-   both replicates); compute per-site mean FREQ.
-3. **List 2(a)** — intersect siNT and sip150 consistent sites; compute
-   Δ = F(mean)siNT − F(mean)sip150.
-4. **List 2(b)** — sites present in siNT (List 1a) but absent from sip150 (List 1b).
-5. **List 3** — union of List 2(a) with positive Δ and List 2(b): final editing-reduction
-   sites.
+1.  **Recovery step** — for each replicate, sites in the master
+    annotation set that fell below the upstream 10% frequency filter are
+    recovered from the pre-filter file and re-attached with their actual
+    FREQ/COV values (or 0 if truly absent).
+2.  **List 1(a/b)** — intersect replicates within each condition (sites
+    with FREQ \> 0 in both replicates); compute per-site mean FREQ.
+3.  **List 2(a)** — intersect siNT and sip150 consistent sites; compute
+    Δ = F(mean)siNT − F(mean)sip150.
+4.  **List 2(b)** — sites present in siNT (List 1a) but absent from
+    sip150 (List 1b).
+5.  **List 3** — union of List 2(a) with positive Δ and List 2(b): final
+    editing-reduction sites.
 
----
+------------------------------------------------------------------------
 
 ## Setup
 
-```{r setup, message=FALSE, warning=FALSE}
+``` r
 # library(tidyverse)
 # library(fs)
 ```
 
----
+------------------------------------------------------------------------
 
 ## Configuration
 
-```{r config}
+``` r
 # # Root directory containing all TSV files, organised by cell line.
 # # Expected structure:
 # #   data/
@@ -75,13 +70,13 @@ The workflow for each cell line:
 # )
 ```
 
----
+------------------------------------------------------------------------
 
 ## Helper functions
 
 ### File readers
 
-```{r fn-readers}
+``` r
 # # Read a SnpEff-annotated, frequency-filtered TSV and rename awkward ANN columns
 # read_annotated_tsv <- function(path) {
 #   read_tsv(path, show_col_types = FALSE) |>
@@ -109,7 +104,7 @@ The workflow for each cell line:
 
 ### Recovery step
 
-```{r fn-recovery}
+``` r
 # # Build a master annotation table from all four annotated files for a cell line.
 # # Keeps the first-seen annotation for any site that appears in multiple files.
 # build_master_annotation <- function(cell_line) {
@@ -174,7 +169,7 @@ The workflow for each cell line:
 
 ### List-building functions
 
-```{r fn-lists}
+``` r
 # # List 1: intersect two replicates for one condition.
 # # "Consistent" = site has FREQ > 0 in BOTH replicates after recovery.
 # # Returns per-site mean FREQ with individual replicate FREQs retained.
@@ -276,22 +271,22 @@ The workflow for each cell line:
 # }
 ```
 
----
+------------------------------------------------------------------------
 
 ## Run workflow for all cell lines
 
-```{r run-all, message=TRUE}
+``` r
 # results <- set_names(
 #   map(CELL_LINES, run_workflow),
 #   CELL_LINES
 # )
 ```
 
----
+------------------------------------------------------------------------
 
 ## Summary table
 
-```{r summary-table}
+``` r
 # map_dfr(results, function(r) {
 #   tibble(
 #     cell_line               = r$cell_line,
@@ -306,13 +301,13 @@ The workflow for each cell line:
 # })
 ```
 
----
+------------------------------------------------------------------------
 
 ## Visualisation
 
 ### Delta frequency distribution (List 2a)
 
-```{r plot-delta, fig.width=9, fig.height=4, warning=FALSE}
+``` r
 # map_dfr(results, function(r) {
 #   r$list2a |> mutate(cell_line = r$cell_line)
 # }) |>
@@ -332,10 +327,11 @@ The workflow for each cell line:
 
 ### Mean editing frequency: siNT vs sip150 (List 2a)
 
-Recovered sites (where at least one replicate value came from the pre-filter file)
-are shown with a different shape so they can be assessed separately.
+Recovered sites (where at least one replicate value came from the
+pre-filter file) are shown with a different shape so they can be
+assessed separately.
 
-```{r plot-scatter, fig.width=10, fig.height=4, warning=FALSE}
+``` r
 # map_dfr(results, function(r) {
 #   r$list2a |> mutate(cell_line = r$cell_line)
 # }) |>
@@ -368,7 +364,7 @@ are shown with a different shape so they can be assessed separately.
 
 ### List 3 composition: shared vs siNT-only
 
-```{r plot-list3-composition, fig.width=6, fig.height=4}
+``` r
 # map_dfr(results, function(r) {
 #   r$list3 |> mutate(cell_line = r$cell_line)
 # }) |>
@@ -388,7 +384,7 @@ are shown with a different shape so they can be assessed separately.
 
 ### Repeat type breakdown (List 3)
 
-```{r plot-reptype, fig.width=8, fig.height=4}
+``` r
 # map_dfr(results, function(r) {
 #   r$list3 |> mutate(cell_line = r$cell_line)
 # }) |>
@@ -404,11 +400,11 @@ are shown with a different shape so they can be assessed separately.
 #   theme_bw()
 ```
 
----
+------------------------------------------------------------------------
 
 ## Export
 
-```{r export, eval=FALSE}
+``` r
 # out_dir <- "output/reddisco"
 # dir_create(out_dir)
 # 
@@ -422,4 +418,3 @@ are shown with a different shape so they can be assessed separately.
 #   message("Exported: ", cl)
 # })
 ```
-
