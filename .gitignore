@@ -7,3 +7,5 @@
 input-data/*
 
 /.quarto/
+
+**/*.quarto_ipynb
