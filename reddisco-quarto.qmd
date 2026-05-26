@@ -11,283 +11,346 @@ format:
 
 ## RNA Editing Quarto Notebook (Downstream Analysis)
 
-This notebook processes per-sample, per-replicate RNA editing output from RediTools v1
-and replicates the manual filtering workflow in a reproducible, scriptable form.
+This notebook processes per-sample, per-replicate RNA editing output from RediTools v1 and replicates the manual filtering workflow in a reproducible, scripted form.
 
-The workflow for each cell line:
+The workflow for each cell line is designed based on this manual workflow from Pei San:
 
-1. **Recovery step** — for each replicate, sites in the master annotation set that fell
-   below the upstream 10% frequency filter are recovered from the pre-filter file and
-   re-attached with their actual FREQ/COV values (or 0 if truly absent).
-2. **List 1(a/b)** — intersect replicates within each condition (sites with FREQ > 0 in
-   both replicates); compute per-site mean FREQ.
-3. **List 2(a)** — intersect siNT and sip150 consistent sites; compute
-   Δ = F(mean)siNT − F(mean)sip150.
-4. **List 2(b)** — sites present in siNT (List 1a) but absent from sip150 (List 1b).
-5. **List 3** — union of List 2(a) with positive Δ and List 2(b): final editing-reduction
-   sites.
+![Fig.1 Manual workflow done on Excel](images/SCR-20260525-bkrz.png)
 
----
+1.  **Recovery step** — for each replicate, sites in the master annotation set that fell below the upstream 10% frequency filter are recovered from the pre-filter file and re-attached with their actual FREQ and COV values (or 0 if truly absent).
+2.  **List 1(a/b)** — intersect replicates within each condition (sites with FREQ \> 0 in both replicates); compute per-site mean FREQ.
+3.  **List 2(a)** — intersect siNT and sip150 consistent sites; compute Δ = F(mean)siNT − F(mean)sip150.
+4.  **List 2(b)** — sites present in siNT (List 1a) but absent from sip150 (List 1b).
+5.  **List 3** — union of List 2(a) with positive Δ and List 2(b): final editing-reduction sites.
+
+------------------------------------------------------------------------
 
 ## Setup
 
 ```{r setup, message=FALSE, warning=FALSE}
-# library(tidyverse)
-# library(fs)
+library(tidyverse)
+library(fs)
 ```
 
----
+------------------------------------------------------------------------
 
 ## Configuration
 
 ```{r config}
-# # Root directory containing all TSV files, organised by cell line.
-# # Expected structure:
-# #   data/
-# #     ORL-207/
-# #       ORL-207-siNT-R1.known_sites_freq10pct_genic.tsv     <- annotated (SnpEff)
-# #       ORL-207-siNT-R1-knownEditing-labeled.tsv             <- pre-filter (no SnpEff)
-# #       ... (same pattern for R2, sip150-R1, sip150-R2)
-# #     SCC9/  ...
-# #     BICR10/  ...  (ensure R1 is the corrected, relabelled file)
-# DATA_DIR <- "data"
-# 
-# # Cell lines to process
-# CELL_LINES <- c("ORL-207", "SCC9", "BICR10")
-# 
-# # File suffix for the SnpEff-annotated, frequency-filtered files
-# ANNOTATED_SUFFIX <- "known_sites_freq10pct_genic.tsv"
-# 
-# # File suffix for the pre-filter files (AG-only, no frequency cutoff, NO header)
-# # Adjust this to match your actual pre-filter filename suffix
-# PREFILTER_SUFFIX <- "known_sites_AG_genic.tsv"
-# 
-# # Columns used to uniquely identify an editing site across files
-# SITE_KEYS <- c("CHROM", "POS")
-# 
-# # Column names for the headerless pre-filter file (RediTools AG-filtered output)
-# PREFILTER_COLS <- c(
-#   "CHROM", "POS", "REF", "STRAND", "COV", "MeanQ",
-#   "BaseCount", "AllSubs", "FREQ",
-#   "gCOV", "gMeanQ", "gBaseCount", "gAllSubs", "gFREQ",
-#   "REPTYPE", "REPNAME", "SNPFlag", "dbSNP_ID",
-#   "REDIPortal", "EDITSTATUS"
-# )
+# Root directory containing all TSV files, organised by cell line.
+# Expected structure:
+#   input-data/
+#       ORL-207/
+#         ORL-207-siNT-R1.known_sites_freq10pct_genic.tsv  <- annotated (SnpEff)
+#         ORL-207-siNT-R1-knownEditing-labeled.tsv         <- pre-filter (knownEditing)
+#         ... (same pattern for R2, sip150-R1, sip150-R2)
+#       SCC9/  ...
+#       BICR10/  ...  (ensure R1 is the corrected, relabelled file)
+
+DATA_DIR <- "input-data"
+
+# Cell lines to process
+CELL_LINES <- c("ORL-207", "SCC9", "BICR10")
+
+# File suffix for the SnpEff-annotated, frequency-filtered files
+ANNOTATED_SUFFIX <- "known_sites_freq10pct_genic.tsv"
+
+# File suffix for the pre-filter files (AG-only, no frequency cutoff, no header)
+PREFILTER_SUFFIX <- "knownEditing-labeled.tsv"
+
+# Columns used to uniquely identify an editing site across files
+SITE_KEYS <- c("CHROM", "POS")
+
+# Column names for the headerless pre-filter file (RediTools AG-filtered output)
+PREFILTER_COLS <- c(
+  "CHROM", "POS", "REF", "STRAND", "COV", "MeanQ",
+  "BaseCount", "AllSubs", "FREQ",
+  "gCOV", "gMeanQ", "gBaseCount", "gAllSubs", "gFREQ",
+  "REPTYPE", "REPNAME", "SNPFlag", "dbSNP_ID",
+  "REDIPortalFlag", "EDITSTATUS"
+)
 ```
 
----
+------------------------------------------------------------------------
 
 ## Helper functions
 
 ### File readers
 
 ```{r fn-readers}
-# # Read a SnpEff-annotated, frequency-filtered TSV and rename awkward ANN columns
-# read_annotated_tsv <- function(path) {
-#   read_tsv(path, show_col_types = FALSE) |>
-#     rename(
-#       gene    = `ANN[0].GENE`,
-#       feature = `ANN[0].FEATUREID`,
-#       effect  = `ANN[0].EFFECT`,
-#       impact  = `ANN[0].IMPACT`,
-#       biotype = `ANN[0].BIOTYPE`,
-#       hgvs_c  = `ANN[0].HGVS_C`
-#     )
-# }
-# 
-# # Read a headerless pre-filter TSV (RediTools AG-only output, no frequency cutoff)
-# read_prefilter_tsv <- function(path) {
-#   read_tsv(path, col_names = PREFILTER_COLS, show_col_types = FALSE)
-# }
-# 
-# # Build a file path given cell line, condition, replicate, and suffix
-# build_path <- function(cell_line, condition, replicate, suffix) {
-#   path(DATA_DIR, cell_line,
-#        paste0(cell_line, "-", condition, "-", replicate, ".", suffix))
-# }
+# Read a SnpEff-annotated, frequency-filtered TSV and rename awkward ANN columns
+read_annotated_tsv <- function(path) {
+  read_tsv(path, show_col_types = FALSE) |>
+    rename(
+      gene    = `ANN[0].GENE`,
+      feature = `ANN[0].FEATUREID`,
+      effect  = `ANN[0].EFFECT`,
+      impact  = `ANN[0].IMPACT`,
+      biotype = `ANN[0].BIOTYPE`,
+      hgvs_c  = `ANN[0].HGVS_C`
+    )
+}
+
+# Read a headerless pre-filter TSV (RediTools AG-only output, no frequency cutoff)
+read_prefilter_tsv <- function(path) {
+  read_tsv(path, col_names = PREFILTER_COLS, show_col_types = FALSE)
+}
+
+# Build a file path given cell line, condition, replicate, and suffix
+build_path <- function(cell_line, condition, replicate, suffix) {
+  path(DATA_DIR, cell_line,
+       paste0(cell_line, "-", condition, "-", replicate, "-", suffix))
+}
 ```
 
 ### Recovery step
 
 ```{r fn-recovery}
-# # Build a master annotation table from all four annotated files for a cell line.
-# # Keeps the first-seen annotation for any site that appears in multiple files.
-# build_master_annotation <- function(cell_line) {
-#   combos <- expand_grid(
-#     condition = c("siNT", "sip150"),
-#     replicate = c("R1", "R2")
-#   )
-# 
-#   map2(combos$condition, combos$replicate, function(cond, rep) {
-#     p <- build_path(cell_line, cond, rep, ANNOTATED_SUFFIX)
-#     if (file_exists(p)) read_annotated_tsv(p) else NULL
-#   }) |>
-#     compact() |>
-#     bind_rows() |>
-#     distinct(CHROM, POS, .keep_all = TRUE)
-# }
-# 
-# # For one replicate: recover sites in the master annotation set that were dropped
-# # by the upstream frequency filter.  Returns the annotated dataframe with dropped
-# # sites re-attached (FREQ/COV from the pre-filter file, or 0 if truly absent).
-# # A `recovered` column flags which rows were added this way.
-# recover_replicate <- function(annotated_df, prefilter_path, master_annot) {
-# 
-#   # Sites in the master that are absent from this replicate's annotated file
-#   missing <- anti_join(master_annot, annotated_df, by = SITE_KEYS)
-# 
-#   if (nrow(missing) == 0) {
-#     return(mutate(annotated_df, recovered = FALSE))
-#   }
-# 
-#   # Pull FREQ and COV for missing sites from the pre-filter file
-#   prefilter <- read_prefilter_tsv(prefilter_path) |>
-#     select(CHROM, POS, FREQ, COV)
-# 
-#   recovered_rows <- missing |>
-#     # Keep annotation columns only (FREQ/COV will come from pre-filter)
-#     select(CHROM, POS, REF, ALT, STRAND,
-#            gene, feature, effect, impact, biotype, hgvs_c,
-#            REPTYPE, REPNAME, EDITSTATUS) |>
-#     left_join(prefilter, by = SITE_KEYS) |>
-#     mutate(
-#       FREQ      = replace_na(FREQ, 0),   # 0 = truly absent in this replicate
-#       COV       = replace_na(COV,  0),
-#       recovered = TRUE
-#     )
-# 
-#   bind_rows(
-#     mutate(annotated_df, recovered = FALSE),
-#     recovered_rows
-#   )
-# }
-# 
-# # Load and recover one replicate: wrapper that calls both readers and recover_replicate
-# load_replicate <- function(cell_line, condition, replicate, master_annot) {
-#   ann_path <- build_path(cell_line, condition, replicate, ANNOTATED_SUFFIX)
-#   pre_path <- build_path(cell_line, condition, replicate, PREFILTER_SUFFIX)
-# 
-#   annotated <- read_annotated_tsv(ann_path)
-#   recover_replicate(annotated, pre_path, master_annot)
-# }
+# Build a master annotation table from all four annotated files for a cell line.
+# Keeps the first-seen annotation for any site that appears in multiple files.
+build_master_annotation <- function(cell_line) {
+  combos <- expand_grid(
+    condition = c("siNT", "sip150"),
+    replicate = c("R1", "R2")
+  )
+
+  map2(combos$condition, combos$replicate, function(cond, rep) {
+    p <- build_path(cell_line, cond, rep, ANNOTATED_SUFFIX)
+    if (file_exists(p)) read_annotated_tsv(p) else NULL
+  }) |>
+    compact() |>
+    bind_rows() |>
+    distinct(CHROM, POS, .keep_all = TRUE)
+}
+
+# For one replicate: recover sites in the master annotation set that were dropped by the upstream frequency filter.
+# Returns the annotated dataframe with dropped sites re-attached (FREQ and COV from the pre-filter file, or 0 if truly absent).
+# A `recovered` column flags which rows were added this way.
+recover_replicate <- function(annotated_df, prefilter_path, master_annot) {
+  # Sites in the master that are absent from this replicate's annotated file
+  missing <- anti_join(master_annot, annotated_df, by = SITE_KEYS)
+  if (nrow(missing) == 0) {
+    return(mutate(annotated_df, recovered = FALSE))
+  }
+
+  # Pull FREQ and COV for missing sites from the pre-filter file
+  prefilter <- read_prefilter_tsv(prefilter_path) |>
+    select(CHROM, POS, FREQ, COV)
+
+  recovered_rows <- missing |>
+    # Keep annotation columns only (FREQ/COV will come from pre-filter)
+    select(CHROM, POS, REF, ALT, STRAND,
+           gene, feature, effect, impact, biotype, hgvs_c,
+           REPTYPE, REPNAME, EDITSTATUS) |>
+    left_join(prefilter, by = SITE_KEYS) |>
+    mutate(
+      FREQ      = replace_na(FREQ, 0),   # 0 = truly absent in this replicate
+      COV       = replace_na(COV,  0),
+      recovered = TRUE
+    )
+
+  bind_rows(
+    mutate(annotated_df, recovered = FALSE),
+    recovered_rows
+  )
+}
+
+# Load and recover one replicate: wrapper that calls both readers and recover_replicate
+load_replicate <- function(cell_line, condition, replicate, master_annot) {
+  ann_path <- build_path(cell_line, condition, replicate, ANNOTATED_SUFFIX)
+  pre_path <- build_path(cell_line, condition, replicate, PREFILTER_SUFFIX)
+
+  annotated <- read_annotated_tsv(ann_path)
+  recover_replicate(annotated, pre_path, master_annot)
+}
 ```
 
 ### List-building functions
 
 ```{r fn-lists}
-# # List 1: intersect two replicates for one condition.
-# # "Consistent" = site has FREQ > 0 in BOTH replicates after recovery.
-# # Returns per-site mean FREQ with individual replicate FREQs retained.
-# make_list1 <- function(r1_df, r2_df, condition_label) {
-#   inner_join(
-#     r1_df |> select(all_of(SITE_KEYS), gene, effect, impact, biotype,
-#                     REPTYPE, REPNAME, EDITSTATUS, STRAND,
-#                     freq_R1 = FREQ, cov_R1 = COV, recovered_R1 = recovered),
-#     r2_df |> select(all_of(SITE_KEYS),
-#                     freq_R2 = FREQ, cov_R2 = COV, recovered_R2 = recovered),
-#     by = SITE_KEYS
-#   ) |>
-#     filter(freq_R1 > 0, freq_R2 > 0) |>   # both replicates must show evidence
-#     mutate(
-#       condition    = condition_label,
-#       mean_freq    = (freq_R1 + freq_R2) / 2,
-#       mean_cov     = (cov_R1  + cov_R2)  / 2,
-#       any_recovered = recovered_R1 | recovered_R2
-#     )
-# }
-# 
-# # List 2(a): sites consistent in BOTH conditions.
-# # Computes delta = F(mean)siNT - F(mean)sip150.
-# make_list2a <- function(list1a, list1b) {
-#   inner_join(
-#     list1a |> select(all_of(SITE_KEYS), gene, effect, impact, biotype,
-#                      REPTYPE, REPNAME, EDITSTATUS, STRAND,
-#                      mean_freq_siNT   = mean_freq,
-#                      mean_cov_siNT    = mean_cov,
-#                      freq_R1_siNT     = freq_R1,
-#                      freq_R2_siNT     = freq_R2,
-#                      recovered_siNT   = any_recovered),
-#     list1b |> select(all_of(SITE_KEYS),
-#                      mean_freq_sip150 = mean_freq,
-#                      mean_cov_sip150  = mean_cov,
-#                      freq_R1_sip150   = freq_R1,
-#                      freq_R2_sip150   = freq_R2,
-#                      recovered_sip150 = any_recovered),
-#     by = SITE_KEYS
-#   ) |>
-#     mutate(
-#       delta_freq  = mean_freq_siNT - mean_freq_sip150,
-#       list_origin = "2a_shared"
-#     )
-# }
-# 
-# # List 2(b): sites in siNT only (absent from sip150 consistent list).
-# make_list2b <- function(list1a, list1b) {
-#   anti_join(list1a, list1b, by = SITE_KEYS) |>
-#     mutate(
-#       delta_freq  = mean_freq,   # full siNT frequency; sip150 is absent/0
-#       list_origin = "2b_siNT_only"
-#     )
-# }
-# 
-# # List 3: editing-reduction sites.
-# # List 2(a) with positive delta  +  all List 2(b).
-# make_list3 <- function(list2a, list2b) {
-#   bind_rows(
-#     filter(list2a, delta_freq > 0),
-#     list2b
-#   ) |>
-#     arrange(desc(delta_freq))
-# }
-# 
-# # Master function: run the full workflow for one cell line
-# run_workflow <- function(cell_line) {
-#   message("\n── Processing: ", cell_line, " ──")
-# 
-#   # Build master annotation from all four annotated files
-#   master <- build_master_annotation(cell_line)
-#   message("  Master annotation set: ", nrow(master), " sites")
-# 
-#   # Load and recover each replicate
-#   siNT_R1   <- load_replicate(cell_line, "siNT",   "R1", master)
-#   siNT_R2   <- load_replicate(cell_line, "siNT",   "R2", master)
-#   sip150_R1 <- load_replicate(cell_line, "sip150", "R1", master)
-#   sip150_R2 <- load_replicate(cell_line, "sip150", "R2", master)
-# 
-#   message("  Recovered sites — siNT-R1: ",   sum(siNT_R1$recovered),
-#           "  siNT-R2: ",                      sum(siNT_R2$recovered),
-#           "  sip150-R1: ",                    sum(sip150_R1$recovered),
-#           "  sip150-R2: ",                    sum(sip150_R2$recovered))
-# 
-#   list1a <- make_list1(siNT_R1,   siNT_R2,   "siNT")
-#   list1b <- make_list1(sip150_R1, sip150_R2, "sip150")
-#   list2a <- make_list2a(list1a, list1b)
-#   list2b <- make_list2b(list1a, list1b)
-#   list3  <- make_list3(list2a, list2b)
-# 
-#   list(
-#     cell_line = cell_line,
-#     list1a    = list1a,
-#     list1b    = list1b,
-#     list2a    = list2a,
-#     list2b    = list2b,
-#     list3     = list3
-#   )
-# }
+# List 1: intersect two replicates for one condition.
+# "Consistent" = site has FREQ > 0 in BOTH replicates after recovery.
+# Returns per-site mean FREQ with individual replicate FREQs retained.
+make_list1 <- function(r1_df, r2_df, condition_label) {
+  inner_join(
+    r1_df |> select(all_of(SITE_KEYS), gene, effect, impact, biotype,
+                    REPTYPE, REPNAME, EDITSTATUS, STRAND,
+                    freq_R1 = FREQ, cov_R1 = COV, recovered_R1 = recovered),
+    r2_df |> select(all_of(SITE_KEYS),
+                    freq_R2 = FREQ, cov_R2 = COV, recovered_R2 = recovered),
+    by = SITE_KEYS
+  ) |>
+    filter(freq_R1 > 0, freq_R2 > 0) |>   # both replicates must show evidence
+    mutate(
+      condition    = condition_label,
+      mean_freq    = (freq_R1 + freq_R2) / 2,
+      mean_cov     = (cov_R1  + cov_R2)  / 2,
+      any_recovered = recovered_R1 | recovered_R2
+    )
+}
+
+# List 2(a): sites consistent in BOTH conditions.
+# Computes delta = F(mean)siNT - F(mean)sip150.
+make_list2a <- function(list1a, list1b) {
+  inner_join(
+    list1a |> select(all_of(SITE_KEYS), gene, effect, impact, biotype,
+                     REPTYPE, REPNAME, EDITSTATUS, STRAND,
+                     mean_freq_siNT   = mean_freq,
+                     mean_cov_siNT    = mean_cov,
+                     freq_R1_siNT     = freq_R1,
+                     freq_R2_siNT     = freq_R2,
+                     recovered_siNT   = any_recovered),
+    list1b |> select(all_of(SITE_KEYS),
+                     mean_freq_sip150 = mean_freq,
+                     mean_cov_sip150  = mean_cov,
+                     freq_R1_sip150   = freq_R1,
+                     freq_R2_sip150   = freq_R2,
+                     recovered_sip150 = any_recovered),
+    by = SITE_KEYS
+  ) |>
+    mutate(
+      delta_freq  = mean_freq_siNT - mean_freq_sip150,
+      list_origin = "2a_shared"
+    )
+}
+
+# List 2(b): sites in siNT only (absent from sip150 consistent list).
+make_list2b <- function(list1a, list1b) {
+  anti_join(list1a, list1b, by = SITE_KEYS) |>
+    mutate(
+      delta_freq  = mean_freq,   # full siNT frequency; sip150 is absent/0
+      list_origin = "2b_siNT_only"
+    )
+}
+
+# List 3: editing-reduction sites.
+# List 2(a) with positive delta  +  all List 2(b).
+make_list3 <- function(list2a, list2b) {
+  bind_rows(
+    filter(list2a, delta_freq > 0),
+    list2b
+  ) |>
+    arrange(desc(delta_freq))
+}
+
+# Master function: run the full workflow for one cell line
+run_workflow <- function(cell_line) {
+  message("\n── Processing: ", cell_line, " ──")
+
+  # Build master annotation from all four annotated files
+  master <- build_master_annotation(cell_line)
+  message("  Master annotation set: ", nrow(master), " sites")
+
+  # Load and recover each replicate
+  siNT_R1   <- load_replicate(cell_line, "siNT",   "R1", master)
+  siNT_R2   <- load_replicate(cell_line, "siNT",   "R2", master)
+  sip150_R1 <- load_replicate(cell_line, "sip150", "R1", master)
+  sip150_R2 <- load_replicate(cell_line, "sip150", "R2", master)
+
+  message("  Recovered sites — siNT-R1: ",   sum(siNT_R1$recovered),
+          "  siNT-R2: ",                      sum(siNT_R2$recovered),
+          "  sip150-R1: ",                    sum(sip150_R1$recovered),
+          "  sip150-R2: ",                    sum(sip150_R2$recovered))
+
+  list1a <- make_list1(siNT_R1,   siNT_R2,   "siNT")
+  list1b <- make_list1(sip150_R1, sip150_R2, "sip150")
+  list2a <- make_list2a(list1a, list1b)
+  list2b <- make_list2b(list1a, list1b)
+  list3  <- make_list3(list2a, list2b)
+
+  list(
+    cell_line = cell_line,
+    list1a    = list1a,
+    list1b    = list1b,
+    list2a    = list2a,
+    list2b    = list2b,
+    list3     = list3
+  )
+}
 ```
 
----
+```{r sanity-check}
+#| eval: false
+
+# ── SCRATCH: sanity check with ORL-207 only ──────────────────────
+
+# Step 1: read one annotated file directly and inspect
+test_ann <- read_annotated_tsv(
+  "input-data/ORL-207/ORL-207-siNT-R1.known_sites_freq10pct_genic.tsv"
+)
+glimpse(test_ann)
+head(test_ann)
+nrow(test_ann)
+
+# Step 2: read one pre-filter file directly and inspect
+test_pre <- read_prefilter_tsv(
+  "input-data/ORL-207/ORL-207-siNT-R1-knownEditing-labeled.tsv"
+)
+glimpse(test_pre)
+head(test_pre)
+
+# Step 3: build master annotation and inspect
+master <- build_master_annotation("ORL-207")
+nrow(master)       # how many unique sites across all 4 files?
+glimpse(master)
+
+# Step 4: load and recover ONE replicate, check what came back
+siNT_R1 <- load_replicate("ORL-207", "siNT", "R1", master)
+nrow(siNT_R1)
+count(siNT_R1, recovered)    # how many rows were recovered vs primary?
+
+# # peek at recovered rows only — do FREQ values look plausible?
+# filter(siNT_R1, recovered == TRUE) |> 
+#   select(CHROM, POS, FREQ, COV) |> 
+#   head(20)
+
+# # Step 5: make List 1a manually
+# siNT_R2   <- load_replicate("ORL-207", "siNT",   "R2", master)
+# sip150_R1 <- load_replicate("ORL-207", "sip150", "R1", master)
+# sip150_R2 <- load_replicate("ORL-207", "sip150", "R2", master)
+
+# list1a <- make_list1(siNT_R1, siNT_R2, "siNT")
+# nrow(list1a)
+# summary(list1a$mean_freq)    # does the frequency distribution look right?
+
+# list1b <- make_list1(sip150_R1, sip150_R2, "sip150")
+# nrow(list1b)
+
+# # Step 6: List 2a — how many shared sites? delta distribution sensible?
+# list2a <- make_list2a(list1a, list1b)
+# nrow(list2a)
+# summary(list2a$delta_freq)
+# hist(list2a$delta_freq, breaks = 40)   # quick base R plot, no ggplot needed
+
+# # Step 7: List 2b — siNT only sites
+# list2b <- make_list2b(list1a, list1b)
+# nrow(list2b)
+
+# # Step 8: List 3 — final
+# list3 <- make_list3(list2a, list2b)
+# nrow(list3)
+# count(list3, list_origin)
+
+
+```
+
+------------------------------------------------------------------------
 
 ## Run workflow for all cell lines
 
 ```{r run-all, message=TRUE}
-# results <- set_names(
-#   map(CELL_LINES, run_workflow),
-#   CELL_LINES
-# )
+# rds_path <- "output/reddisco/results.rds"
+
+# if (file_exists(rds_path)) {
+#   message("Loading results from cache: ", rds_path)
+#   results <- readRDS(rds_path)
+# } else {
+#   results <- set_names(map(CELL_LINES, run_workflow), CELL_LINES)
+#   saveRDS(results, rds_path)
+# }
 ```
 
----
+------------------------------------------------------------------------
 
 ## Summary table
 
@@ -306,7 +369,7 @@ The workflow for each cell line:
 # })
 ```
 
----
+------------------------------------------------------------------------
 
 ## Visualisation
 
@@ -332,8 +395,7 @@ The workflow for each cell line:
 
 ### Mean editing frequency: siNT vs sip150 (List 2a)
 
-Recovered sites (where at least one replicate value came from the pre-filter file)
-are shown with a different shape so they can be assessed separately.
+Recovered sites (where at least one replicate value came from the pre-filter file) are shown with a different shape so they can be assessed separately.
 
 ```{r plot-scatter, fig.width=10, fig.height=4, warning=FALSE}
 # map_dfr(results, function(r) {
@@ -404,11 +466,12 @@ are shown with a different shape so they can be assessed separately.
 #   theme_bw()
 ```
 
----
+------------------------------------------------------------------------
 
 ## Export
 
 ```{r export, eval=FALSE}
+#| cache: false
 # out_dir <- "output/reddisco"
 # dir_create(out_dir)
 # 
@@ -422,4 +485,3 @@ are shown with a different shape so they can be assessed separately.
 #   message("Exported: ", cl)
 # })
 ```
-
